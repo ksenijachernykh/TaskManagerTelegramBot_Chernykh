@@ -4,6 +4,7 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using System.Text;
 
 namespace TaskManagerTelegramBot_Chernykh
 {
@@ -116,11 +117,19 @@ namespace TaskManagerTelegramBot_Chernykh
             };
         }
 
-        public static InlineKeyboardMarkup DeleteEvent(string Message)
+        
+        public InlineKeyboardMarkup GetDeleteButton(int taskId)
         {
-            List<InlineKeyboardButton> inlineKeyboards = new List<InlineKeyboardButton>();
-            inlineKeyboards.Add(new InlineKeyboardButton("Удалить", Message));
-            return new InlineKeyboardMarkup(inlineKeyboards);
+            
+            string callbackData = $"del_{taskId}";
+
+            return new InlineKeyboardMarkup(new[]
+            {
+                new[]
+                {
+                    InlineKeyboardButton.WithCallbackData("? Удалить", callbackData)
+                }
+            });
         }
 
         public async Task SendMessage(long chatId, int typeMessage)
@@ -137,8 +146,8 @@ namespace TaskManagerTelegramBot_Chernykh
             {
                 await TelegramBotClient.SendMessage(
                     chatId,
-                    $"Указанное время и дата не могут быть уставнолены, " +
-                    $"потому-что сейчас уже: {DateTime.Now.ToString("HH.mm dd.MM.yyyy")}");
+                    $"Указанное время и дата не могут быть установлены, " +
+                    $"потому что сейчас уже: {DateTime.Now.ToString("HH.mm dd.MM.yyyy")}");
             }
         }
 
@@ -160,9 +169,11 @@ namespace TaskManagerTelegramBot_Chernykh
                     {
                         await TelegramBotClient.SendMessage(
                             chatId,
-                            $"Уведомить пользователя: {task.Time.ToString("HH:mm dd.MM.yyyy")}" +
-                            $"\nСообщение: {task.Message}",
-                            replyMarkup: DeleteEvent(task.Message)
+                            $"Напоминание\n" +
+                            $"Время: {task.Time.ToString("HH:mm dd.MM.yyyy")}\n" +
+                            $"Сообщение: {task.Message}",
+                            parseMode: ParseMode.Markdown,
+                            replyMarkup: GetDeleteButton(task.Id) 
                         );
                     }
                 }
@@ -196,43 +207,54 @@ namespace TaskManagerTelegramBot_Chernykh
                 string scheduleInfo = GetScheduleInfo(task);
                 await TelegramBotClient.SendMessage(
                     chatId,
-                    $"<b>{task.Time:hh\\:mm}</b>\n" +
-                    $"{task.Message}\n" +
+                    $"Повторяющаяся задача\n" +
+                    $"Время: {task.Time:hh\\:mm}\n" +
+                    $"Сообщение: {task.Message}\n" +
                     $"{scheduleInfo}",
-                    parseMode: ParseMode.Html,
+                    parseMode: ParseMode.Markdown,
                     replyMarkup: GetDeleteRecurringButton(task.Id));
             }
         }
 
         private string GetScheduleInfo(RecurringTask task)
         {
-            var days = task.ScheduleData.Split(',').Select(int.Parse);
-            var dayNames = days.Select(d => GetDayName(d)).ToList();
-            return "По: " + string.Join(", ", dayNames);
+            try
+            {
+                var days = task.ScheduleData.Split(',').Select(int.Parse);
+                var dayNames = days.Select(d => GetDayName(d)).ToList();
+                return "Повторяется по: " + string.Join(", ", dayNames);
+            }
+            catch
+            {
+                return $"Повторяется по расписанию: {task.ScheduleData}";
+            }
         }
 
         private string GetDayName(int dayNumber)
         {
             return dayNumber switch
             {
-                0 => "Воскресенье",
-                1 => "Понедельник",
-                2 => "Вторник",
-                3 => "Среда",
-                4 => "Четверг",
-                5 => "Пятница",
-                6 => "Суббота",
-                _ => "Неизвестно"
+                0 => "воскресеньям",
+                1 => "понедельникам",
+                2 => "вторникам",
+                3 => "средам",
+                4 => "четвергам",
+                5 => "пятницам",
+                6 => "субботам",
+                _ => "неизвестным дням"
             };
         }
 
-        public static InlineKeyboardMarkup GetDeleteRecurringButton(int taskId)
+        public InlineKeyboardMarkup GetDeleteRecurringButton(int taskId)
         {
+            // Создаем безопасный callback data для повторяющихся задач
+            string callbackData = $"recurring_{taskId}";
+
             return new InlineKeyboardMarkup(new[]
             {
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("Удалить повторяющуюся", $"recurring_{taskId}")
+                    InlineKeyboardButton.WithCallbackData("Удалить повторяющуюся", callbackData)
                 }
             });
         }
@@ -328,7 +350,7 @@ namespace TaskManagerTelegramBot_Chernykh
                     await TelegramBotClient.SendMessage(
                         chatId,
                         "Неверный формат. Пример:\n" +
-                        "• повтор 21:00 среда,воскресенье Полить цветы");
+                        "повтор 21:00 среда,воскресенье Полить цветы");
                     return;
                 }
 
@@ -406,12 +428,6 @@ namespace TaskManagerTelegramBot_Chernykh
 
             var days = input.Split(',')
                 .Select(d => d.Trim().ToLower())
-                .Select(d =>
-                {
-                    Console.WriteLine($"DEBUG: Обрабатываем день: '{d}'");
-                    Console.WriteLine($"DEBUG: Есть в словаре: {dayMap.ContainsKey(d)}");
-                    return d;
-                })
                 .Where(d => dayMap.ContainsKey(d))
                 .Select(d => dayMap[d])
                 .Distinct()
@@ -431,7 +447,7 @@ namespace TaskManagerTelegramBot_Chernykh
         {
             var days = scheduleData.Split(',').Select(int.Parse);
             var dayNames = days.Select(d => GetDayName(d)).ToList();
-            return "По: " + string.Join(", ", dayNames);
+            return "Повторяется по: " + string.Join(", ", dayNames);
         }
 
         private async Task HandleUpdateAsync(ITelegramBotClient client, Update update, CancellationToken cancellationToken)
@@ -467,18 +483,51 @@ namespace TaskManagerTelegramBot_Chernykh
                         }
                     }
                 }
-                else
+                else if (query.Data.StartsWith("del_"))
                 {
-                    bool success = await DatabaseManager.DeleteEventByMessageAsync(query.Data);
-                    if (success)
+                    if (int.TryParse(query.Data.Replace("del_", ""), out int taskId))
                     {
-                        await SendMessage(query.Message.Chat.Id, 4);
+                        
+                        bool success = await DeleteEventByIdAsync(taskId);
+                        if (success)
+                        {
+                            await TelegramBotClient.AnswerCallbackQuery(
+                                callbackQueryId: query.Id,
+                                text: "Задача удалена");
+
+                            await TelegramBotClient.DeleteMessage(
+                                chatId: query.Message.Chat.Id,
+                                messageId: query.Message.MessageId);
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Ошибка при обработке callback запроса");
+            }
+        }
+
+        
+        private async Task<bool> DeleteEventByIdAsync(int taskId)
+        {
+            try
+            {
+                using var connection = new MySql.Data.MySqlClient.MySqlConnection(ConnectionString);
+                await connection.OpenAsync();
+
+                var command = new MySql.Data.MySqlClient.MySqlCommand(
+                    "DELETE FROM events WHERE id = @id",
+                    connection);
+                command.Parameters.AddWithValue("@id", taskId);
+
+                int rowsAffected = await command.ExecuteNonQueryAsync();
+                return rowsAffected > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Ошибка при удалении задачи с ID {taskId}");
+                return false;
             }
         }
 
@@ -511,7 +560,7 @@ namespace TaskManagerTelegramBot_Chernykh
                         {
                             await TelegramBotClient.SendMessage(
                                 telegramId,
-                                "Напоминание(поторяющие): " + task.Message);
+                                "Напоминание (повторяющееся): " + task.Message);
                         }
                     }
                 }
