@@ -10,10 +10,12 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
     {
         public long IdUser { get; set; }
         public List<Events> Events { get; set; }
+        public int DbUserId { get; set; }
         public Users(long idUser) 
         {
             IdUser = idUser;
             Events = new List<Events>();
+            DbUserId = -1;
         }
     }
 }

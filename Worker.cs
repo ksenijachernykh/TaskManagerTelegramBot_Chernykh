@@ -9,10 +9,13 @@ namespace TaskManagerTelegramBot_Chernykh
 {
     public class Worker : BackgroundService
     {
-        readonly string Token = "Полученный телеграмм токен";
-        TelegramBotClient TelegramBotClient;
-        List<Users> Users = new List<Users>();
-        Timer Timer;
+        readonly string Token = "8362919085:AAGFGKv_nsqLx7iUSlV6J7kgD4U9Mrp_arM";
+        readonly string ConnectionString = "Server=localhost;Database=taskmanagerbot;User=root;Password=;";
+
+        ITelegramBotClient TelegramBotClient;
+        DatabaseManager DatabaseManager;
+        System.Threading.Timer Timer;
+
         List<string> Messages = new List<string>()
         {
             "Здравствуйте! " +
@@ -34,9 +37,8 @@ namespace TaskManagerTelegramBot_Chernykh
             "Все события удалены."
         };
 
-
-
         private readonly ILogger<Worker> _logger;
+
         public Worker(ILogger<Worker> logger)
         {
             _logger = logger;
@@ -44,19 +46,57 @@ namespace TaskManagerTelegramBot_Chernykh
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            TelegramBotClient = new TelegramBotClient(Token);
-            TelegramBotClient.StartReceiving(
-                HandleUpdateAsync,
-                HandleErrorAsync,
-                null,
-                new CancellationTokenSource().Token);
-            TimerCallback TimerCallback = new TimerCallback(Tick);
-            Timer = new Timer(TimerCallback, 0, 0, 60 * 1000);
+            try
+            {
+                DatabaseManager = new DatabaseManager(ConnectionString);
+                await DatabaseManager.OpenConnectionAsync();
+                _logger.LogInformation("Подключение к базе данных установлено");
+                TelegramBotClient = new TelegramBotClient(Token);
+                var receiverOptions = new ReceiverOptions
+                {
+                    AllowedUpdates = Array.Empty<UpdateType>()
+                };
+                TelegramBotClient.StartReceiving(
+                    updateHandler: HandleUpdateAsync,
+                    errorHandler: HandlePollingErrorAsync,
+                    receiverOptions: receiverOptions,
+                    cancellationToken: stoppingToken
+                );
+                Timer = new System.Threading.Timer(
+                    callback: CheckRemindersCallback,
+                    state: null,
+                    dueTime: TimeSpan.Zero,
+                    period: TimeSpan.FromMinutes(1));
+
+                _logger.LogInformation("Бот запущен и готов к работе");
+
+                var me = await TelegramBotClient.GetMe(cancellationToken: stoppingToken);
+                _logger.LogInformation($"Бот @{me.Username} запущен");
+
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    await Task.Delay(1000, stoppingToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Ошибка при запуске бота");
+                throw;
+            }
         }
 
         public bool CheckFormatDateTime(string value, out DateTime time)
         {
-            return DateTime.TryParse(value, out time);
+            string[] formats = new[]
+            {
+                "HH:mm dd.MM.yyyy",
+                "H:mm dd.MM.yyyy",
+                "HH:mm d.MM.yyyy",
+                "H:mm d.MM.yyyy"
+            };
+
+            return DateTime.TryParseExact(value, formats, null,
+                System.Globalization.DateTimeStyles.None, out time);
         }
 
         private static ReplyKeyboardMarkup GetButtons()
@@ -79,9 +119,9 @@ namespace TaskManagerTelegramBot_Chernykh
             return new InlineKeyboardMarkup(inlineKeyboards);
         }
 
-        public async void SendMessage(long chatId, int typeMessage)
+        public async Task SendMessage(long chatId, int typeMessage)
         {
-            if(typeMessage != 3)
+            if (typeMessage != 3)
             {
                 await TelegramBotClient.SendMessage(
                     chatId,
@@ -98,126 +138,159 @@ namespace TaskManagerTelegramBot_Chernykh
             }
         }
 
-        public async void Command(long chatId, string command)
+        public async Task Command(long chatId, string command)
         {
             if (command.ToLower() == "/start")
-                SendMessage(chatId, 0);
+                await SendMessage(chatId, 0);
             else if (command.ToLower() == "/create_task")
-                SendMessage(chatId, 1);
+                await SendMessage(chatId, 1);
             else if (command.ToLower() == "/list_tasks")
             {
-                Users User = Users.Find(x => x.IdUser == chatId);
+                var tasks = await DatabaseManager.GetUserEventsAsync(chatId);
 
-                if (User == null || User.Events.Count == 0)
-                    SendMessage(chatId, 4);
+                if (tasks == null || tasks.Count == 0)
+                    await SendMessage(chatId, 3);
                 else
                 {
-                    foreach (Events Event in User.Events)
+                    foreach (var task in tasks)
                     {
                         await TelegramBotClient.SendMessage(
                             chatId,
-                            $"Уведомить пользователя: {Event.Time.ToString("HH:mm dd:MM:yyyy")}" +
-                            $"\nСообщение: {Event.Message}",
-                            replyMarkup: DeleteEvent(Event.Message)
+                            $"Уведомить пользователя: {task.Time.ToString("HH:mm dd.MM.yyyy")}" +
+                            $"\nСообщение: {task.Message}",
+                            replyMarkup: DeleteEvent(task.Message)
                         );
                     }
                 }
             }
         }
 
-        private void GetMessage(Message message)
+        private async Task GetMessage(Message message)
         {
             Console.WriteLine("Получено сообщение: " + message.Text + " от пользователя: " + message.Chat.Username);
             long IdUser = message.Chat.Id;
             string MessageUser = message.Text;
 
-            if (message.Text.Contains("/")) Command(message.Chat.Id, message.Text);
+            if (message.Text.Contains("/"))
+                await Command(message.Chat.Id, message.Text);
             else if (message.Text.Equals("Удалить все задачи"))
             {
-                Users User = Users.Find(x => x.IdUser == message.Chat.Id);
-                if (User == null || User.Events.Count == 0)
-                    SendMessage(message.Chat.Id, 4);
+                bool success = await DatabaseManager.DeleteAllUserEventsAsync(message.Chat.Id);
+                if (!success)
+                {
+                    await SendMessage(message.Chat.Id, 3);
+                }
                 else
                 {
-                    User.Events = new List<Events>();
-                    SendMessage(User.IdUser, 6);
+                    await SendMessage(message.Chat.Id, 5);
                 }
             }
             else
             {
-                Users User = Users.Find(x => x.IdUser == message.Chat.Id);
-                if (User == null)
-                {
-                    User = new Users(message.Chat.Id);
-                    Users.Add(User);
-                }
-
                 string[] Info = message.Text.Split('\n');
                 if (Info.Length < 2)
                 {
-                    SendMessage(message.Chat.Id, 2);
+                    await SendMessage(message.Chat.Id, 2);
                     return;
                 }
 
                 DateTime Time;
                 if (CheckFormatDateTime(Info[0], out Time) == false)
                 {
-                    SendMessage(message.Chat.Id, 2);
+                    await SendMessage(message.Chat.Id, 2);
                     return;
                 }
 
                 if (Time < DateTime.Now)
-                    SendMessage(message.Chat.Id, 3);
+                {
+                    await SendMessage(message.Chat.Id, 3);
+                    return;
+                }
 
-                User.Events.Add(new Events(
-                    Time,
-                    message.Text.Replace(Time.ToString("HH:mm dd.MM.yyyy") + "\n", "")));
+                int userId = await DatabaseManager.GetOrCreateUserAsync(message.Chat.Id);
+
+                string taskMessage = message.Text.Replace(Time.ToString("HH:mm dd.MM.yyyy") + "\n", "");
+                await DatabaseManager.AddEventAsync(userId, Time, taskMessage);
             }
         }
 
-        private async Task HandleUpdateAsync(
-            ITelegramBotClient client,
-            Update update,
-            CancellationToken cancellationToken)
+        private async Task HandleUpdateAsync(ITelegramBotClient client, Update update, CancellationToken cancellationToken)
         {
-            if(update.Type == UpdateType.Message)
+            if (update.Type == UpdateType.Message)
             {
-                GetMessage(update.Message);
+                await GetMessage(update.Message);
             }
-            else if(update.Type == UpdateType.CallbackQuery)
+            else if (update.Type == UpdateType.CallbackQuery)
             {
                 CallbackQuery query = update.CallbackQuery;
-                Users User = Users.Find(x=> x.IdUser == query.Message.Chat.Id);
-                Events Event = User.Events.Find(x => x.Message == query.Data);
-                User.Events.Remove(Event);
-                SendMessage(query.Message.Chat.Id, 5);
+
+                bool success = await DatabaseManager.DeleteEventByMessageAsync(query.Data);
+                if (success)
+                {
+                    await SendMessage(query.Message.Chat.Id, 4);
+                }
             }
         }
 
-        private async Task HandleErrorAsync(
-            ITelegramBotClient client,
-            Exception exception,
-            HandleErrorSource source,
-            CancellationToken token)
+        private async Task HandlePollingErrorAsync(ITelegramBotClient client, Exception exception, CancellationToken cancellationToken)
         {
             Console.WriteLine("Ошибка: " + exception.Message);
         }
 
-        public async void Tick(object obj)
+        private async void CheckRemindersCallback(object obj)
         {
-            string TimeNow = DateTime.Now.ToString("HH:mm dd.MM.yyyy");
-            foreach(Users User in Users)
+            try
             {
-                for(int i = 0; i< User.Events.Count; i++)
+                DateTime currentTime = DateTime.Now;
+
+                var reminders = await DatabaseManager.GetEventsForReminderAsync(
+                    new DateTime(currentTime.Year, currentTime.Month, currentTime.Day,
+                                currentTime.Hour, currentTime.Minute, 0));
+
+                if (reminders.Count > 0)
                 {
-                    if (User.Events[i].Time.ToString("HH:mm dd.MM.yyyy") != TimeNow) continue;
-                    await TelegramBotClient.SendMessage(
-                        User.IdUser,
-                        "Напоминание: " + User.Events[i].Message
-                        );
-                    User.Events.Remove(User.Events[i]);
+                    _logger.LogInformation("Найдено {Count} напоминаний для отправки", reminders.Count);
+
+                    foreach (var reminder in reminders)
+                    {
+                        try
+                        {
+                            await TelegramBotClient.SendMessage(
+                                chatId: reminder.TelegramId,
+                                text: "Напоминание: " + reminder.Message);
+
+                            _logger.LogInformation("Отправлено напоминание пользователю {ChatId}",
+                                reminder.TelegramId);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Ошибка при отправке напоминания пользователю {ChatId}",
+                                reminder.TelegramId);
+                        }
+                    }
+
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Ошибка при проверке напоминаний");
+            }
+        }
+
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("Остановка бота...");
+
+            Timer?.Dispose();
+
+            if (DatabaseManager != null)
+            {
+                await DatabaseManager.CloseConnectionAsync();
+                DatabaseManager.Dispose();
+            }
+
+            await base.StopAsync(cancellationToken);
+            _logger.LogInformation("Бот остановлен");
         }
     }
 }
