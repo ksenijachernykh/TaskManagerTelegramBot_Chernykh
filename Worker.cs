@@ -44,14 +44,14 @@ namespace TaskManagerTelegramBot_Chernykh
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
-                }
-                await Task.Delay(1000, stoppingToken);
-            }
+            TelegramBotClient = new TelegramBotClient(Token);
+            TelegramBotClient.StartReceiving(
+                HandleUpdateAsync,
+                HandleErrorAsync,
+                null,
+                new CancellationTokenSource().Token);
+            TimerCallback TimerCallback = new TimerCallback(Tick);
+            Timer = new Timer(TimerCallback, 0, 0, 60 * 1000);
         }
 
         public bool CheckFormatDateTime(string value, out DateTime time)
@@ -201,6 +201,23 @@ namespace TaskManagerTelegramBot_Chernykh
             CancellationToken token)
         {
             Console.WriteLine("Ошибка: " + exception.Message);
+        }
+
+        public async void Tick(object obj)
+        {
+            string TimeNow = DateTime.Now.ToString("HH:mm dd.MM.yyyy");
+            foreach(Users User in Users)
+            {
+                for(int i = 0; i< User.Events.Count; i++)
+                {
+                    if (User.Events[i].Time.ToString("HH:mm dd.MM.yyyy") != TimeNow) continue;
+                    await TelegramBotClient.SendMessage(
+                        User.IdUser,
+                        "Напоминание: " + User.Events[i].Message
+                        );
+                    User.Events.Remove(User.Events[i]);
+                }
+            }
         }
     }
 }
