@@ -127,7 +127,7 @@ namespace TaskManagerTelegramBot_Chernykh
             {
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("? Удалить", callbackData)
+                    InlineKeyboardButton.WithCallbackData("Удалить", callbackData)
                 }
             });
         }
@@ -247,7 +247,7 @@ namespace TaskManagerTelegramBot_Chernykh
 
         public InlineKeyboardMarkup GetDeleteRecurringButton(int taskId)
         {
-            // Создаем безопасный callback data для повторяющихся задач
+            
             string callbackData = $"recurring_{taskId}";
 
             return new InlineKeyboardMarkup(new[]
@@ -543,31 +543,39 @@ namespace TaskManagerTelegramBot_Chernykh
                 DateTime currentTime = DateTime.Now;
                 Console.WriteLine($"Проверка напоминаний в {currentTime:HH:mm:ss}");
 
+                
+                var regularEvents = await DatabaseManager.GetEventsForReminderAsync(currentTime);
+                Console.WriteLine($"Найдено обычных задач: {regularEvents.Count}");
+
+                foreach (var ev in regularEvents)
+                {
+                    Console.WriteLine($"Отправляем напоминание (обычное): {ev.Message}");
+
+                    await TelegramBotClient.SendMessage(
+                        ev.TelegramId,
+                        "Напоминание: " + ev.Message);
+                }
+
+               
                 var recurringTasks = await DatabaseManager.GetRecurringTasksForTodayAsync(currentTime);
                 Console.WriteLine($"Найдено повторяющихся задач: {recurringTasks.Count}");
 
                 foreach (var task in recurringTasks)
                 {
-                    Console.WriteLine($"Задача: '{task.Message}' в {task.Time}");
-
                     if (currentTime.TimeOfDay.Hours == task.Time.Hours &&
                         currentTime.TimeOfDay.Minutes == task.Time.Minutes)
                     {
-                        Console.WriteLine($"Отправляем напоминание: {task.Message}");
+                        Console.WriteLine($"Отправляем напоминание (повторяющееся): {task.Message}");
 
-                        long telegramId = await DatabaseManager.GetTelegramIdByUserIdAsync(task.UserId);
-                        if (telegramId > 0)
-                        {
-                            await TelegramBotClient.SendMessage(
-                                telegramId,
-                                "Напоминание (повторяющееся): " + task.Message);
-                        }
+                        await TelegramBotClient.SendMessage(
+                            task.TelegramId,
+                            "Напоминание (повторяющееся): " + task.Message);
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка: {ex.Message}");
+                Console.WriteLine($"Ошибка при проверке напоминаний: {ex.Message}");
             }
         }
 
