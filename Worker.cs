@@ -5,6 +5,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using System.Text;
+using MySql.Data.MySqlClient;
 
 namespace TaskManagerTelegramBot_Chernykh
 {
@@ -117,10 +118,8 @@ namespace TaskManagerTelegramBot_Chernykh
             };
         }
 
-        
         public InlineKeyboardMarkup GetDeleteButton(int taskId)
         {
-            
             string callbackData = $"del_{taskId}";
 
             return new InlineKeyboardMarkup(new[]
@@ -173,7 +172,7 @@ namespace TaskManagerTelegramBot_Chernykh
                             $"Время: {task.Time.ToString("HH:mm dd.MM.yyyy")}\n" +
                             $"Сообщение: {task.Message}",
                             parseMode: ParseMode.Markdown,
-                            replyMarkup: GetDeleteButton(task.Id) 
+                            replyMarkup: GetDeleteButton(task.Id)
                         );
                     }
                 }
@@ -247,7 +246,6 @@ namespace TaskManagerTelegramBot_Chernykh
 
         public InlineKeyboardMarkup GetDeleteRecurringButton(int taskId)
         {
-            
             string callbackData = $"recurring_{taskId}";
 
             return new InlineKeyboardMarkup(new[]
@@ -487,7 +485,6 @@ namespace TaskManagerTelegramBot_Chernykh
                 {
                     if (int.TryParse(query.Data.Replace("del_", ""), out int taskId))
                     {
-                        
                         bool success = await DeleteEventByIdAsync(taskId);
                         if (success)
                         {
@@ -508,15 +505,14 @@ namespace TaskManagerTelegramBot_Chernykh
             }
         }
 
-        
         private async Task<bool> DeleteEventByIdAsync(int taskId)
         {
             try
             {
-                using var connection = new MySql.Data.MySqlClient.MySqlConnection(ConnectionString);
+                using var connection = new MySqlConnection(ConnectionString);
                 await connection.OpenAsync();
 
-                var command = new MySql.Data.MySqlClient.MySqlCommand(
+                var command = new MySqlCommand(
                     "DELETE FROM events WHERE id = @id",
                     connection);
                 command.Parameters.AddWithValue("@id", taskId);
@@ -543,7 +539,7 @@ namespace TaskManagerTelegramBot_Chernykh
                 DateTime currentTime = DateTime.Now;
                 Console.WriteLine($"Проверка напоминаний в {currentTime:HH:mm:ss}");
 
-                
+                // 1. Проверяем обычные задачи
                 var regularEvents = await DatabaseManager.GetEventsForReminderAsync(currentTime);
                 Console.WriteLine($"Найдено обычных задач: {regularEvents.Count}");
 
@@ -556,7 +552,7 @@ namespace TaskManagerTelegramBot_Chernykh
                         "Напоминание: " + ev.Message);
                 }
 
-               
+                // 2. Проверяем повторяющиеся задачи
                 var recurringTasks = await DatabaseManager.GetRecurringTasksForTodayAsync(currentTime);
                 Console.WriteLine($"Найдено повторяющихся задач: {recurringTasks.Count}");
 

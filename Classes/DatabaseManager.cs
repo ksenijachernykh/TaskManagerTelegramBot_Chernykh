@@ -7,6 +7,34 @@ using System.Threading.Tasks;
 
 namespace TaskManagerTelegramBot_Chernykh.Classes
 {
+    // ЕДИНСТВЕННЫЙ КЛАСС ДЛЯ ОБЫЧНОЙ ЗАДАЧИ
+    public class EventDb
+    {
+        public int Id { get; set; }
+        public DateTime Time { get; set; }
+        public string Message { get; set; }
+    }
+
+    // ЕДИНСТВЕННЫЙ КЛАСС ДЛЯ ПОВТОРЯЮЩЕЙСЯ ЗАДАЧИ
+    public class RecurringTask
+    {
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public string Message { get; set; }
+        public string ScheduleType { get; set; }
+        public string ScheduleData { get; set; }
+        public TimeSpan Time { get; set; }
+        public bool IsActive { get; set; }
+        public long TelegramId { get; set; }
+    }
+
+    // КЛАСС ДЛЯ НАПОМИНАНИЙ
+    public class ReminderEvent
+    {
+        public long TelegramId { get; set; }
+        public string Message { get; set; }
+    }
+
     public class DatabaseManager : IDisposable
     {
         private readonly string _connectionString;
@@ -63,14 +91,20 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
         {
             await OpenConnectionAsync();
 
+            Console.WriteLine($"Добавляем задачу: userId={userId}, время={eventTime:yyyy-MM-dd HH:mm:ss}, сообщение='{message}'");
+
             var cmd = new MySqlCommand(
                 "INSERT INTO events (user_id, event_time, message) VALUES (@userId, @eventTime, @message); SELECT LAST_INSERT_ID();",
                 _connection);
+
             cmd.Parameters.AddWithValue("@userId", userId);
             cmd.Parameters.AddWithValue("@eventTime", eventTime);
             cmd.Parameters.AddWithValue("@message", message);
 
             var eventId = await cmd.ExecuteScalarAsync();
+
+            Console.WriteLine($"Задача добавлена с ID: {eventId}");
+
             return Convert.ToInt32(eventId);
         }
 
@@ -84,8 +118,10 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
                   FROM events e 
                   INNER JOIN users u ON e.user_id = u.id 
                   WHERE u.telegram_id = @telegramId 
+                  AND e.event_time > NOW()
                   ORDER BY e.event_time",
                 _connection);
+
             cmd.Parameters.AddWithValue("@telegramId", telegramId);
 
             using var reader = await cmd.ExecuteReaderAsync();
@@ -98,6 +134,8 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
                     Message = reader.GetString("message")
                 });
             }
+
+            Console.WriteLine($"Найдено задач для пользователя {telegramId}: {events.Count}");
 
             return events;
         }
@@ -122,13 +160,19 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
             await OpenConnectionAsync();
 
             var events = new List<ReminderEvent>();
+
+            // Форматируем время для сравнения (только дата и время до минут)
+            string formattedTime = currentTime.ToString("yyyy-MM-dd HH:mm");
+            Console.WriteLine($"Ищем задачи на время: {formattedTime}");
+
             var cmd = new MySqlCommand(
                 @"SELECT u.telegram_id, e.message 
                   FROM events e 
                   INNER JOIN users u ON e.user_id = u.id 
                   WHERE DATE_FORMAT(e.event_time, '%Y-%m-%d %H:%i') = @currentTime",
                 _connection);
-            cmd.Parameters.AddWithValue("@currentTime", currentTime.ToString("yyyy-MM-dd HH:mm"));
+
+            cmd.Parameters.AddWithValue("@currentTime", formattedTime);
 
             using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -138,6 +182,8 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
                     TelegramId = reader.GetInt64("telegram_id"),
                     Message = reader.GetString("message")
                 });
+
+                Console.WriteLine($"Найдена задача для напоминания: telegramId={reader.GetInt64("telegram_id")}, message={reader.GetString("message")}");
             }
 
             return events;
@@ -183,7 +229,7 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
 
             var tasks = new List<RecurringTask>();
             var cmd = new MySqlCommand(
-                @"SELECT rt.* 
+                @"SELECT rt.*, u.telegram_id 
                   FROM recurring_tasks rt
                   INNER JOIN users u ON rt.user_id = u.id 
                   WHERE u.telegram_id = @telegramId AND rt.is_active = TRUE
@@ -208,12 +254,13 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
                         ScheduleType = reader.GetString("schedule_type"),
                         ScheduleData = reader.GetString("schedule_data"),
                         Time = time,
-                        IsActive = reader.GetBoolean("is_active")
+                        IsActive = reader.GetBoolean("is_active"),
+                        TelegramId = reader.GetInt64("telegram_id")
                     });
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Ошибка при чтении задачи: {ex.Message}");
+                    Console.WriteLine($"Ошибка при чтении повторяющейся задачи: {ex.Message}");
                 }
             }
 
@@ -225,13 +272,19 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
             await OpenConnectionAsync();
 
             var tasks = new List<RecurringTask>();
+            int currentDayOfWeek = (int)currentDate.DayOfWeek;
+
+            Console.WriteLine($"Ищем повторяющиеся задачи для дня недели: {currentDayOfWeek}");
 
             var cmd = new MySqlCommand(
                 @"SELECT rt.*, u.telegram_id 
                   FROM recurring_tasks rt
                   INNER JOIN users u ON rt.user_id = u.id 
-                  WHERE rt.is_active = TRUE AND rt.schedule_type = 'weekly'",
+                  WHERE rt.is_active = TRUE 
+                  AND FIND_IN_SET(@dayOfWeek, rt.schedule_data) > 0",
                 _connection);
+
+            cmd.Parameters.AddWithValue("@dayOfWeek", currentDayOfWeek);
 
             using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -253,13 +306,8 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
                         TelegramId = reader.GetInt64("telegram_id")
                     };
 
-                    var days = task.ScheduleData.Split(',').Select(int.Parse).ToList();
-                    bool shouldExecute = days.Contains((int)currentDate.DayOfWeek);
-
-                    if (shouldExecute)
-                    {
-                        tasks.Add(task);
-                    }
+                    tasks.Add(task);
+                    Console.WriteLine($"Найдена повторяющаяся задача: {task.Message} в {task.Time:hh\\:mm}");
                 }
                 catch (Exception ex)
                 {
@@ -283,6 +331,7 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
             var rowsAffected = await cmd.ExecuteNonQueryAsync();
             return rowsAffected > 0;
         }
+
         public async Task<long> GetTelegramIdByUserIdAsync(int userId)
         {
             await OpenConnectionAsync();
@@ -305,30 +354,5 @@ namespace TaskManagerTelegramBot_Chernykh.Classes
         {
             _connection?.Dispose();
         }
-    }
-
-    public class EventDb
-    {
-        public int Id { get; set; }
-        public DateTime Time { get; set; }
-        public string Message { get; set; }
-    }
-
-    public class ReminderEvent
-    {
-        public long TelegramId { get; set; }
-        public string Message { get; set; }
-    }
-
-    public class RecurringTask
-    {
-        public int Id { get; set; }
-        public int UserId { get; set; }
-        public string Message { get; set; }
-        public string ScheduleType { get; set; } 
-        public string ScheduleData { get; set; } 
-        public TimeSpan Time { get; set; }
-        public bool IsActive { get; set; }
-        public long TelegramId { get; set; }
     }
 }
